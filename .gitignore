@@ -1,34 +1,40 @@
-# ---------- Frontend / Node / Vite ----------
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-frontend/.cache/
+# ----------------------------
+# Python backend
+# ----------------------------
+application/backend/venv/
+application/backend/.venv/
+application/backend/__pycache__/
+application/backend/**/*.pyc
+application/backend/.pytest_cache/
+application/backend/.mypy_cache/
+
+# Entornos / secretos
+application/backend/.env
+application/backend/.env.*
+
+# ----------------------------
+# Frontend Node / Vite
+# ----------------------------
+application/frontend/node_modules/
+application/frontend/dist/
+application/frontend/.vite/
+application/frontend/.cache/
 
 # Logs
-frontend/npm-debug.log*
-frontend/yarn-debug.log*
-frontend/yarn-error.log*
-frontend/pnpm-debug.log*
+application/frontend/npm-debug.log*
+application/frontend/yarn-debug.log*
+application/frontend/yarn-error.log*
+application/frontend/pnpm-debug.log*
 
-# Env files
-frontend/.env
-frontend/.env.local
-frontend/.env.*.local
+# Env frontend
+application/frontend/.env
+application/frontend/.env.local
+application/frontend/.env.*.local
 
-# ---------- Backend / Python ----------
-backend/venv/
-backend/.venv/
-backend/__pycache__/
-backend/*.pyc
-backend/.pytest_cache/
-backend/.mypy_cache/
-
-# Env files
-backend/.env
-backend/.env.*
-
-# ---------- General ----------
-.DS_Store
-Thumbs.db
+# ----------------------------
+# Generales
+# ----------------------------
 .vscode/
 .idea/
+.DS_Store
+Thumbs.db
