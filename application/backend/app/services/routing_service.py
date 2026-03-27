@@ -20,7 +20,7 @@ class ZMGRoutingService:
         with open(graph_file, 'rb') as f:
             self.G = pickle.load(f)
         
-        print(f"✓ Grafo cargado: {len(self.G.nodes):,} nodos")
+        print(f"[OK] Grafo cargado: {len(self.G.nodes):,} nodos")
         
         # Crear índice espacial para búsquedas rápidas
         self._build_spatial_index()
@@ -40,10 +40,10 @@ class ZMGRoutingService:
                 lon, lat = data['x'], data['y']
                 self.spatial_index.insert(node, (lon, lat, lon, lat))
             
-            print("✓ Índice espacial construido")
+            print("[OK] Indice espacial construido")
             
         except ImportError:
-            print("⚠ rtree no disponible, usando búsqueda lineal")
+            print("[WARN] rtree no disponible, usando busqueda lineal")
             self.spatial_index = None
     
     def find_nearest_node_fast(self, lat, lon):
@@ -94,3 +94,6 @@ class ZMGRoutingService:
             
         except nx.NetworkXNoPath:
             return {'error': 'No se encontró ruta'}
+
+# Alias para compatibilidad con la API
+RoutingService = ZMGRoutingService

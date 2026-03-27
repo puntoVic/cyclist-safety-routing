@@ -39,7 +39,7 @@ async def calculate_route(
         # Buscar en cache
         cached_result = await get_cache(cache_key)
         if cached_result:
-            print(f"✓ Ruta encontrada en cache")
+            print(f"[OK] Ruta encontrada en cache")
             return cached_result
         
         # Calcular ruta

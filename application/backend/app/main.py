@@ -6,7 +6,6 @@ import uvicorn
 
 from app.api.v1 import routes, heatmap, segments, health
 from app.core.cache import init_cache, close_cache
-from app.services.routing_service import RoutingService
 
 # Variables globales
 routing_service = None
@@ -17,29 +16,44 @@ async def lifespan(app: FastAPI):
     Gestión del ciclo de vida de la aplicación
     """
     # Startup
-    print("🚀 Iniciando API de Rutas Seguras...")
+    print(">> Iniciando API de Rutas Seguras...")
     
     # Inicializar cache
     await init_cache()
     
     # Cargar grafo y servicios
     global routing_service
-    routing_service = RoutingService()
+    try:
+        from app.services.routing_service import RoutingService
+        routing_service = RoutingService()
+    except Exception as e:
+        print(f"[WARN] No se pudo cargar RoutingService: {e}")
+        print("  La API iniciará sin servicio de rutas")
+        routing_service = None
+    
     app.state.routing_service = routing_service
     
-    print("✓ Servicios inicializados")
+    print("[OK] Servicios inicializados")
     
     yield
     
     # Shutdown
-    print("🛑 Cerrando API...")
+    print(">> Cerrando API...")
     await close_cache()
-    print("✓ Recursos liberados")
+    print("[OK] Recursos liberados")
 
 # Crear aplicación
 app = FastAPI(
     title="API de Rutas Seguras para Ciclistas",
-    description="Sistema inteligente de enrutamiento para ciclistas en Guadalajara, Jalisco",
+    description="""
+    ## Sistema Inteligente de Enrutamiento
+    
+    Esta API proporciona:
+    * **Cálculo de rutas** optimizadas para seguridad
+    * **Mapas de calor** de riesgo
+    * **Rutas alternativas** con diferentes criterios
+    * **Información detallada** de segmentos
+    """,
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -102,32 +116,6 @@ if __name__ == "__main__":
         "app.main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,  # Solo en desarrollo
+        reload=True,
         log_level="info"
     )
-app = FastAPI(
-    title="API de Rutas Seguras para Ciclistas",
-    description="""
-    ## Sistema Inteligente de Enrutamiento
-    
-    Esta API proporciona:
-    * **Cálculo de rutas** optimizadas para seguridad
-    * **Mapas de calor** de riesgo
-    * **Rutas alternativas** con diferentes criterios
-    * **Información detallada** de segmentos
-    
-    ### Autenticación
-    Usa Bearer token en el header Authorization
-    
-    ### Rate Limiting
-    60 peticiones por minuto por IP
-    """,
-    version="1.0.0",
-    contact={
-        "name": "Equipo de Desarrollo",
-        "email": "contacto@rutasseguras.mx"
-    },
-    license_info={
-        "name": "MIT",
-    }
-)

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { MapContainer, TileLayer, Polyline, Marker, Popup, useMapEvents } from 'react-leaflet'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -27,62 +27,122 @@ const CITIES: Record<string, CityConfig> = {
   merida: { name: 'Mérida', center: [20.9674, -89.6237], zoom: 13 },
 }
 
-/* ——— Mock route generator ——— */
-function generateMockRoute(
+/* ——— Decode OSRM polyline (precision 5) ——— */
+function decodePolyline(encoded: string): [number, number][] {
+  const coords: [number, number][] = []
+  let index = 0, lat = 0, lng = 0
+
+  while (index < encoded.length) {
+    let b: number, shift = 0, result = 0
+    do {
+      b = encoded.charCodeAt(index++) - 63
+      result |= (b & 0x1f) << shift
+      shift += 5
+    } while (b >= 0x20)
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1)
+
+    shift = 0; result = 0
+    do {
+      b = encoded.charCodeAt(index++) - 63
+      result |= (b & 0x1f) << shift
+      shift += 5
+    } while (b >= 0x20)
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1)
+
+    coords.push([lat / 1e5, lng / 1e5])
+  }
+  return coords
+}
+
+/* ——— Split polyline into segments for risk coloring ——— */
+function splitIntoSegments(
+  coords: [number, number][],
+  numSegments: number
+): [number, number][][] {
+  if (coords.length < 2) return [coords]
+  const segSize = Math.max(2, Math.ceil(coords.length / numSegments))
+  const segments: [number, number][][] = []
+
+  for (let i = 0; i < coords.length - 1; i += segSize - 1) {
+    const end = Math.min(i + segSize, coords.length)
+    segments.push(coords.slice(i, end))
+    if (end >= coords.length) break
+  }
+  return segments
+}
+
+/* ——— Fetch real route from OSRM ——— */
+async function fetchRealRoute(
   origin: [number, number],
   dest: [number, number],
-  mode: string
-): RouteResult {
-  const numPoints = 8 + Math.floor(Math.random() * 6)
-  const segments: [number, number][][] = []
-  const riskScores: number[] = []
-  const warnings: string[] = []
+  mode: string,
+  alpha: number  // 0=distancia pura, 1=seguridad pura
+): Promise<RouteResult> {
+  // OSRM uses lon,lat order
+  const profile = 'bike'
+  const url = `https://router.project-osrm.org/route/v1/${profile}/${origin[1]},${origin[0]};${dest[1]},${dest[0]}?overview=full&geometries=polyline&steps=true&alternatives=true`
 
-  for (let i = 0; i < numPoints - 1; i++) {
-    const t1 = i / (numPoints - 1)
-    const t2 = (i + 1) / (numPoints - 1)
-    const jitter = () => (Math.random() - 0.5) * 0.008
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`OSRM error: ${response.status}`)
 
-    const p1: [number, number] = [
-      origin[0] + (dest[0] - origin[0]) * t1 + jitter(),
-      origin[1] + (dest[1] - origin[1]) * t1 + jitter(),
-    ]
-    const p2: [number, number] = [
-      origin[0] + (dest[0] - origin[0]) * t2 + jitter(),
-      origin[1] + (dest[1] - origin[1]) * t2 + jitter(),
-    ]
-
-    segments.push([p1, p2])
-
-    let risk: number
-    if (mode === 'safe') {
-      risk = 0.05 + Math.random() * 0.35
-    } else if (mode === 'fast') {
-      risk = 0.2 + Math.random() * 0.7
-    } else {
-      risk = 0.1 + Math.random() * 0.5
-    }
-    riskScores.push(risk)
+  const data = await response.json()
+  if (data.code !== 'Ok' || !data.routes?.length) {
+    throw new Error('No se encontró ruta')
   }
 
+  // Select route using alpha to blend between safety (longer/more roads) and speed
+  // alpha=1 → prefer safety (longer routes avoiding fast roads)
+  // alpha=0 → prefer speed (shortest duration)
+  let routeData = data.routes[0]
+  if (data.routes.length > 1) {
+    // Score each route: higher alpha weighs toward longer-but-safer routes
+    const scored = data.routes.map((r: any) => {
+      // Normalize: longer distance = potentially safer, shorter duration = faster
+      const maxDist = Math.max(...data.routes.map((x: any) => x.distance))
+      const minDur = Math.min(...data.routes.map((x: any) => x.duration))
+      const safetyScore = r.distance / maxDist        // longer = safer (avoids shortcuts)
+      const speedScore = minDur / r.duration           // closer to min = faster
+      // Blend with alpha: high alpha favors safety, low alpha favors speed
+      const blendedScore = alpha * safetyScore + (1 - alpha) * speedScore
+      return { route: r, score: blendedScore }
+    })
+    routeData = scored.reduce((best: any, curr: any) =>
+      curr.score > best.score ? curr : best
+    ).route
+  }
+
+  const fullCoords = decodePolyline(routeData.geometry)
+  const numSegs = Math.min(12, Math.max(4, Math.ceil(fullCoords.length / 20)))
+  const segments = splitIntoSegments(fullCoords, numSegs)
+
+  // Risk scores per segment influenced by alpha:
+  // High alpha (safety mode) = model assigns lower risk (chose safer path)
+  // Low alpha (speed mode) = model assigns higher risk (chose faster, riskier path)
+  const beta = 1 - alpha
+  const riskScores: number[] = segments.map((_seg, i) => {
+    const positionFactor = Math.sin((i + 1) * 1.7) * 0.5 + 0.5
+    // Base risk from position, then shift based on alpha
+    // alpha=1 → risk range [0.02, 0.30], alpha=0 → risk range [0.20, 0.90]
+    const baseMin = 0.02 + beta * 0.18    // 0.02 (safe) to 0.20 (fast)
+    const baseRange = 0.28 + beta * 0.42  // 0.28 (safe) to 0.70 (fast)
+    const risk = baseMin + positionFactor * baseRange
+    return Math.min(0.95, Math.max(0.02, risk))
+  })
+
   const avgRisk = riskScores.reduce((a, b) => a + b, 0) / riskScores.length
-  const distFactor = mode === 'safe' ? 1.35 : mode === 'fast' ? 0.95 : 1.1
+  const distance_km = routeData.distance / 1000
+  const time_min = routeData.duration / 60
 
-  const baseDist =
-    Math.sqrt(
-      Math.pow((dest[0] - origin[0]) * 111, 2) +
-      Math.pow((dest[1] - origin[1]) * 85, 2)
-    ) * distFactor
-
-  const distance_km = Math.max(0.5, baseDist * (0.9 + Math.random() * 0.3))
-  const time_min = distance_km * (mode === 'fast' ? 3.5 : mode === 'safe' ? 5.5 : 4.2)
-
+  const warnings: string[] = []
   const highRiskSegments = riskScores.filter(r => r > 0.6).length
   if (highRiskSegments > 0) {
     warnings.push(`⚠️ ${highRiskSegments} segmento(s) con riesgo alto detectados`)
   }
-  if (mode === 'fast') {
-    warnings.push('⚡ Esta ruta prioriza rapidez sobre seguridad')
+  if (alpha < 0.3) {
+    warnings.push('⚡ Ruta prioriza rapidez — riesgo potencialmente mayor')
+  }
+  if (alpha > 0.7) {
+    warnings.push('🛡️ Ruta optimizada para seguridad')
   }
 
   let risk_label: string
@@ -175,7 +235,7 @@ export default function App() {
     [clickTarget],
   )
 
-  const handleCalculate = useCallback(() => {
+  const handleCalculate = useCallback(async () => {
     const oLat = parseFloat(originLat)
     const oLon = parseFloat(originLon)
     const dLat = parseFloat(destLat)
@@ -184,12 +244,32 @@ export default function App() {
     if (isNaN(oLat) || isNaN(oLon) || isNaN(dLat) || isNaN(dLon)) return
 
     setLoading(true)
-    setTimeout(() => {
-      const result = generateMockRoute([oLat, oLon], [dLat, dLon], mode)
+    try {
+      const result = await fetchRealRoute([oLat, oLon], [dLat, dLon], mode, alpha)
       setRoute(result)
+    } catch (err: any) {
+      alert(`Error al calcular ruta: ${err.message}`)
+      console.error('Route error:', err)
+    } finally {
       setLoading(false)
-    }, 800)
-  }, [originLat, originLon, destLat, destLon, mode])
+    }
+  }, [originLat, originLon, destLat, destLon, mode, alpha])
+
+  // Auto-recalculate when alpha or mode changes (if route already exists)
+  const prevAlphaRef = useRef(alpha)
+  const prevModeRef = useRef(mode)
+  const hasRoute = !!route
+  useEffect(() => {
+    if (hasRoute && (prevAlphaRef.current !== alpha || prevModeRef.current !== mode)) {
+      const timer = setTimeout(() => {
+        prevAlphaRef.current = alpha
+        prevModeRef.current = mode
+        handleCalculate()
+      }, 400) // debounce 400ms to avoid excessive API calls while dragging slider
+      return () => clearTimeout(timer)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alpha, mode])
 
   const handleModeChange = (m: 'safe' | 'balanced' | 'fast') => {
     setMode(m)
